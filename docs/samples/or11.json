@@ -1,0 +1,20 @@
+{
+  "rbid": 0,
+  "dump": 11,
+  "object_no": 11,
+  "status": 0,
+  "master": 0,
+  "net_master": 0,
+  "warnings": 0,
+  "imperial": 31,
+  "ontime": 17000,
+  "boiler_id": 0,
+  "dim_time": 10,
+  "configured": 1,
+  "model_num": 23,
+  "designT": -39,
+  "model": "CX 199",
+  "fwversion": "2.01.7",
+  "fwdate": "Dec 16 2024",
+  "sicc_module": true
+}

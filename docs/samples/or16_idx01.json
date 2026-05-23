@@ -1,0 +1,23 @@
+{
+  "rbid": 0,
+  "dump": 16,
+  "object_no": 16,
+  "load_no": 1,
+  "LoadType": 3,
+  "OptOutType": 0,
+  "SupplySetPoint": 307,
+  "MaxSupplyT": 329,
+  "SupplyDiffT": 44,
+  "SummerOff": 73,
+  "PumpPurgeTime": 300,
+  "ValveFullSwing": 120,
+  "Priority": 63,
+  "WaterTFrom": 2,
+  "MixingTFrom": 3,
+  "RampTime": 5,
+  "PumpOn": true,
+  "BurnerOnFrom": 0,
+  "TankT": 240,
+  "TankDiffT": 22,
+  "TankTFrom": 7
+}

@@ -1,0 +1,6 @@
+{
+  "name": "IBC Boiler",
+  "render_readme": true,
+  "homeassistant": "2024.10.0",
+  "country": ["CA", "US"]
+}

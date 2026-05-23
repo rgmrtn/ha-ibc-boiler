@@ -1,0 +1,21 @@
+{
+  "rbid": 0,
+  "dump": 34,
+  "object_no": 34,
+  "boiler_id": 0,
+  "network_id": 0,
+  "master": false,
+  "net_master": false,
+  "dhcp": false,
+  "ipaddr": "192.0.2.10",
+  "ipmask": "192.0.2.10",
+  "ipgate": "192.0.2.10",
+  "ipdns": "192.0.2.10",
+  "site_name": "IBC-Boiler",
+  "mac": "aa:bb:cc:dd:ee:ff",
+  "bacnet_id": 0,
+  "bacnet_port": 47809,
+  "portal_status": 1,
+  "ahu_enable": false,
+  "sky35_enable": true
+}

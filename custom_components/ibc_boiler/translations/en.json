@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add IBC Boiler",
+        "description": "Enter the boiler's hostname or IP address. The boiler must be reachable from Home Assistant on the local network.",
+        "data": {
+          "host": "Host or IP address",
+          "scan_interval": "Scan interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the boiler at that address.",
+      "invalid_auth": "The boiler unexpectedly requires authentication.",
+      "invalid_response": "The boiler responded but the data was not usable.",
+      "unknown": "Unexpected error. See the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This boiler is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "IBC Boiler options",
+        "data": {
+          "scan_interval": "Scan interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "supply_temp": { "name": "Supply Temperature" },
+      "return_temp": { "name": "Return Temperature" },
+      "target_temp": { "name": "Internal Target" },
+      "stack_temp": { "name": "Stack Temperature" },
+      "outdoor_temp": { "name": "Outdoor Temperature" },
+      "indoor_temp": { "name": "Indoor Temperature" },
+      "tank_temp": { "name": "Tank Temperature" },
+      "inlet_pressure": { "name": "Inlet Pressure" },
+      "outlet_pressure": { "name": "Outlet Pressure" },
+      "delta_pressure": { "name": "Delta Pressure" },
+      "power_output": { "name": "Power Output" },
+      "cycles": { "name": "Cycles" },
+      "status": { "name": "Status" },
+      "error_code": { "name": "Error Code" }
+    }
+  }
+}

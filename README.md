@@ -62,8 +62,30 @@ Sensors:
 - Cycles (diagnostic, total-increasing)
 - Status (diagnostic, text)
 - Error Code (diagnostic)
+- Last Error (diagnostic, text) - decoded text of the most recent entry in the boiler's error log, matching what the boiler's own web UI shows. Raw bits (`major_err`, `minor_err`, `system_err`, `combi_err`, `sim_status`) plus timestamp and the conditions at the time of the fault (fan RPM, inlet/outlet/board temp, inlet pressure) are exposed as entity attributes.
 
 Temperatures are reported in °C (the V-10's native unit — see `docs/protocol.md`). Home Assistant converts to °F automatically if your profile is set to imperial. Temperatures from sensors that aren't wired up read as `unknown` rather than the V-10's `-32766` sentinel value.
+
+## Error notifications
+
+Whenever the boiler records a new entry in its error log, the integration fires an HA event called `ibc_boiler_error_logged`. Wire it to your phone with an automation:
+
+```yaml
+automation:
+  - alias: "Boiler error notification"
+    trigger:
+      - platform: event
+        event_type: ibc_boiler_error_logged
+    action:
+      - service: notify.mobile_app_<your_phone>
+        data:
+          title: "IBC boiler fault"
+          message: "{{ trigger.event.data.message }} ({{ trigger.event.data.datetime }})"
+```
+
+The event payload also includes `log_no`, `date`, `time`, the raw bit-mask fields (`major_err` / `minor_err` / `system_err` / `combi_err` / `sim_status`), `fan_rpm`, `flame_sense`, `inlet_temp_c` / `outlet_temp_c` / `board_temp_c`, and `inlet_pressure_psi` — enough to build a richer template if you want.
+
+To avoid re-notifying you about old faults every time Home Assistant restarts, the first observation after each restart is treated as the baseline and does not fire the event. Only genuinely new entries trigger.
 
 ## Debug logging
 

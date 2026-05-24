@@ -39,7 +39,7 @@ the error envelope `{ "rbid": 0, "object_no": 201, "fail_code": -1, "operation":
 | code | content | needs index/load |
 |---:|---|---|
 | 6 | Lifetime counters (`PowerOnHrs`, `BurnerOnHrs`, `Starts`, `Cycles`, `Errors`, ...) | — |
-| 7 | Error/event log entry (`log_no`, `Time`, `Date`, `MinErr`, `MajErr`, `FanRPM`, `InletTemp`, ...) | `object_index` 1..35 |
+| 7 | Error/event log entry (`log_no`, `Date`, `Time`, `MinErr`, `MajErr`, `SysErr`, `CombiErr`, `SIM_Status`, `FanRPM`, `InletTemp`, `OutletTemp`, `BoardTemp`, `InletPressure`, `Altitude`, ...) | `object_index` 1..35 |
 | 11 | Device info — `model`, `fwversion`, `fwdate`, `imperial`, `model_num`, `designT`, `boiler_id`, `sicc_module` | — |
 | 13 | Per-load type + emitter (Load1Type..Load5Type, SB1Enable..SB4Enable, Occupied, Imperial) | — |
 | 15 | Combustion/installation config (Altitude, Barometric, VarSpeedMin/Max, VentType) | — |
@@ -90,6 +90,10 @@ that includes:
 - `object_request: 20` returns the same pressure values as **integer
   tenths** (`InletP: 166` = 16.6 psi). Stick to or=19 unless you need
   fan/PID detail. Temperatures in or=20 are still quarter-°C.
+- `object_request: 7` also reports pressures as **integer tenths** of
+  psi (`InletPressure: 170` = 17.0 psi). Confirmed in `error.js`:
+  `displayPressure(respobj.InletPressure / 10)`. Temperatures in or=7
+  are still quarter-°C.
 - `object_request: 19`'s `TargetT` is the controller's current water target
   (driven by demand, outdoor reset, mode). When DHW is the active load on a
   combi-capable boiler, the home page's "On-Demand DHW Target" displays
@@ -104,6 +108,36 @@ that includes:
 - **`-32766`** in any temperature field means "sensor not connected". The HA
   integration converts this to `None`/unknown rather than surfacing the
   sentinel value.
+- In `object_request: 7` log entries, **`Date: "00/00/1900"`** marks an
+  empty (never-used) slot above the actual log depth. The web UI silently
+  skips these and the HA integration does the same.
+
+## Error-log decoding (or=7)
+
+Each `object_request: 7` slot carries a set of bit-mask fields that the
+boiler's own UI converts to readable text via `getErrorString()` in
+`/custom/js/error.js`:
+
+- `MajErr` — hard errors (mask table `HARDERRBITDISPLAYMASK` → `HARDERRLIST`).
+- `MinErr` — soft errors (mask tables `SOFT1ERRBITDISPLAYMASK` /
+  `SOFT2ERRBITDISPLAYMASK` → `SOFT1ERRLIST` / `SOFT2ERRLIST`, with G3
+  variants for SIM-equipped boilers).
+- `SysErr` — system-bus faults (`SYSERRBITDISPLAYMASK` → `SYSERRLIST`).
+- `CombiErr` — on combi boilers, when `MajErr` bit 6 is set, the
+  CBI sub-code in `CombiErr` replaces the (otherwise out-of-range) hard
+  text with one of `CBIERRLIST`.
+- `SIM_Status` — additional 32-bit SIM-module status flags decoded via
+  `SIMSTATUSBITDISPLAYMASK` / `SIMSTATUSLIST`, only relevant on G3/SIM
+  models.
+
+Model identification (for the combi / G3 / large-boiler overrides) uses
+the `model` string and `model_num` from `object_request: 11`. Combi
+models are `model_num` 23 (CX 199) and 24 (CX 150).
+
+`log_no` echoes the requested `object_index`. Entries are ordered most-
+recent-first: `object_index=1` is the latest event. The integration
+polls only index 1 and fires a `ibc_boiler_error_logged` HA event when
+its identity tuple (log_no + date + time + raw bits) changes.
 
 ## Sample payloads
 
@@ -119,6 +153,7 @@ document:
 | `or34.json` | Network identity used for the HA device's MAC connection. |
 | `or16_idx01.json` | `SupplySetPoint: 307` confirms quarter-°C scaling on per-load config (307 / 4 = 76.75 °C = 170 °F). |
 | `or32_load01.json` | `Temperature5: 307` mirrors the or=16 setpoint, confirming the encoding is consistent across objects. |
+| `or07_idx01.json` | Error-log entry shape — `MajErr: 64` + `CombiErr: 1` on a combi boiler decodes to "No CBI"; demonstrates the `12/30/1999` date that appears when the RTC hadn't been set at the time of the event. |
 
 Fresh samples for other object_request codes can be captured at any time —
 the boiler exposes the CGI without auth, so a single `curl` or `Invoke-WebRequest`

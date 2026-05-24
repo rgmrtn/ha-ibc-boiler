@@ -45,7 +45,8 @@
       "power_output": { "name": "Power Output" },
       "cycles": { "name": "Cycles" },
       "status": { "name": "Status" },
-      "error_code": { "name": "Error Code" }
+      "error_code": { "name": "Error Code" },
+      "last_error": { "name": "Last Error" }
     }
   }
 }

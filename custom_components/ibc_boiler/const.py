@@ -27,12 +27,18 @@ DEFAULT_MODEL: Final = "V-10 Boiler"
 OBJECT_NO_DEFAULT: Final = 100
 
 # object_request codes we use:
+#   7  - error/event log entry (per object_index 1..35; 1 = most recent)
 #   11 - device info (model, fwversion, fwdate, imperial, boiler_id, sicc_module)
 #   19 - live data (Status, MBH, SupplyT/ReturnT/TargetT, pressures, errors)
 #   34 - network info (mac, ipaddr, site_name, boiler_id)
+OR_ERROR_LOG: Final = 7
 OR_INFO: Final = 11
 OR_LIVE: Final = 19
 OR_NETWORK: Final = 34
+
+# HA event fired when a new entry appears in the boiler's error log.
+# Listeners receive the decoded message + raw fields; see README.
+EVENT_ERROR_LOGGED: Final = "ibc_boiler_error_logged"
 
 # Sensor sentinel for "not connected" / "not available" returned by the V-10
 # controller when a probe has no reading (e.g. outdoor sensor not wired).

@@ -233,10 +233,12 @@ async def async_setup_entry(
 ) -> None:
     runtime = entry.runtime_data
     device_info = _build_device_info(entry, runtime)
-    async_add_entities(
+    entities: list[SensorEntity] = [
         IBCSensor(runtime.coordinator, entry, description, device_info)
         for description in SENSOR_DESCRIPTIONS
-    )
+    ]
+    entities.append(IBCLastErrorSensor(runtime.coordinator, entry, device_info))
+    async_add_entities(entities)
 
 
 class IBCSensor(CoordinatorEntity[IBCDataUpdateCoordinator], SensorEntity):
@@ -263,3 +265,73 @@ class IBCSensor(CoordinatorEntity[IBCDataUpdateCoordinator], SensorEntity):
         if not isinstance(data, dict):
             return None
         return self.entity_description.value_fn(data)
+
+
+class IBCLastErrorSensor(CoordinatorEntity[IBCDataUpdateCoordinator], SensorEntity):
+    """Most-recent boiler error log entry (object_request 7, object_index 1).
+
+    State is the decoded message that matches the boiler's own web UI.
+    Raw fields and a combined datetime are exposed as attributes so a
+    notification template can render anything the user wants.
+
+    For new-error *notifications* prefer listening to the
+    `ibc_boiler_error_logged` event — it fires only on a state change and
+    carries the same payload as this sensor's attributes.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "last_error"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(
+        self,
+        coordinator: IBCDataUpdateCoordinator,
+        entry: IBCConfigEntry,
+        device_info: DeviceInfo,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_last_error"
+        self._attr_device_info = device_info
+
+    @property
+    def native_value(self) -> StateType:
+        msg = self.coordinator.last_error_message
+        if msg is None:
+            return None
+        # HA caps state strings at 255 chars; multiple simultaneous
+        # faults are joined with "; " and almost always fit, but guard
+        # anyway so an unusual concatenation doesn't break the entity.
+        return msg if len(msg) <= 255 else msg[:252] + "..."
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        entry = self.coordinator.last_error_entry
+        if not entry:
+            return None
+        date = _str_or_none(entry.get("Date"))
+        time = _str_or_none(entry.get("Time"))
+        datetime_str = " ".join(p for p in (date, time) if p) or None
+        return {
+            "log_no": _as_int(entry.get("log_no")),
+            "datetime": datetime_str,
+            "date": date,
+            "time": time,
+            "major_err": _as_int(entry.get("MajErr")),
+            "minor_err": _as_int(entry.get("MinErr")),
+            "system_err": _as_int(entry.get("SysErr")),
+            "combi_err": _as_int(entry.get("CombiErr")),
+            "sim_status": _as_int(entry.get("SIM_Status")),
+            "fan_rpm": _as_int(entry.get("FanRPM")),
+            "flame_sense": _as_int(entry.get("FlameSense")),
+            "inlet_temp_c": _temp(entry.get("InletTemp")),
+            "outlet_temp_c": _temp(entry.get("OutletTemp")),
+            "board_temp_c": _temp(entry.get("BoardTemp")),
+            # or=7 reports pressure as integer tenths of psi (unlike or=19
+            # which is already decimal psi). See docs/protocol.md.
+            "inlet_pressure_psi": (
+                _as_float(entry.get("InletPressure")) / 10
+                if entry.get("InletPressure") is not None
+                else None
+            ),
+        }

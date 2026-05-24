@@ -39,6 +39,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: IBCConfigEntry) -> bool:
         _LOGGER.warning("IBC boiler network fetch failed: %s", network_res)
 
     coordinator = IBCDataUpdateCoordinator(hass, entry, client)
+    # Hand the decoder the model identifiers up-front so the very first
+    # log-entry decode is model-aware (combi/G3 overrides).
+    coordinator.set_model_info(
+        model=info.get("model") if isinstance(info.get("model"), str) else None,
+        model_num=info.get("model_num") if isinstance(info.get("model_num"), int) else None,
+    )
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = IBCRuntimeData(

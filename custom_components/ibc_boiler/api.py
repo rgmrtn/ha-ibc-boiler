@@ -16,8 +16,10 @@ from .const import (
     HTTP_TIMEOUT_SECONDS,
     OBJECT_NO_DEFAULT,
     OR_INFO,
+    OR_LIFETIME,
     OR_LIVE,
     OR_NETWORK,
+    OR_SICC,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -148,6 +150,14 @@ class IBCApiClient:
     async def async_get_network(self) -> dict[str, Any]:
         """Network identity (MAC, IP, site name) — fetch once at setup."""
         return await self.async_query(OR_NETWORK)
+
+    async def async_get_lifetime(self) -> dict[str, Any]:
+        """Lifetime counters (PowerOnHrs, BurnerOnHrs, Starts, ...) — slow-changing."""
+        return await self.async_query(OR_LIFETIME)
+
+    async def async_get_sicc(self) -> dict[str, Any]:
+        """SIP/FCP flame-detection diagnostics (SIP_FlameCurrent, FCP_Power, ...)."""
+        return await self.async_query(OR_SICC)
 
     async def async_test_connection(self) -> dict[str, Any]:
         """Used by the config flow to confirm the host is a V-10 boiler.

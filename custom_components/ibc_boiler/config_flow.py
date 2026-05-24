@@ -24,9 +24,15 @@ from .api import (
     normalize_host,
 )
 from .const import (
+    CONF_ERROR_LOG_SCAN_INTERVAL,
     CONF_HOST,
-    CONF_SCAN_INTERVAL,
-    DEFAULT_SCAN_INTERVAL,
+    CONF_LIFETIME_SCAN_INTERVAL,
+    CONF_LIVE_SCAN_INTERVAL,
+    CONF_SICC_SCAN_INTERVAL,
+    DEFAULT_ERROR_LOG_SCAN_INTERVAL,
+    DEFAULT_LIFETIME_SCAN_INTERVAL,
+    DEFAULT_LIVE_SCAN_INTERVAL,
+    DEFAULT_SICC_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
@@ -50,9 +56,6 @@ def _scan_interval_selector() -> selector.NumberSelector:
 _USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
-        vol.Optional(
-            CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-        ): _scan_interval_selector(),
     }
 )
 
@@ -88,7 +91,7 @@ async def _resolve_unique_id(client: IBCApiClient, host: str) -> tuple[str, str]
 class IBCConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for IBC Boiler."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -97,9 +100,6 @@ class IBCConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             host = normalize_host(str(user_input[CONF_HOST]))
-            scan_interval = int(
-                user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-            )
 
             client = IBCApiClient(self.hass, host)
             try:
@@ -121,7 +121,12 @@ class IBCConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=title,
                     data={CONF_HOST: host},
-                    options={CONF_SCAN_INTERVAL: scan_interval},
+                    options={
+                        CONF_LIVE_SCAN_INTERVAL: DEFAULT_LIVE_SCAN_INTERVAL,
+                        CONF_ERROR_LOG_SCAN_INTERVAL: DEFAULT_ERROR_LOG_SCAN_INTERVAL,
+                        CONF_LIFETIME_SCAN_INTERVAL: DEFAULT_LIFETIME_SCAN_INTERVAL,
+                        CONF_SICC_SCAN_INTERVAL: DEFAULT_SICC_SCAN_INTERVAL,
+                    },
                 )
 
         return self.async_show_form(
@@ -137,7 +142,7 @@ class IBCConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class IBCOptionsFlow(OptionsFlow):
-    """Edit the scan interval after setup."""
+    """Edit per-endpoint scan intervals after setup."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -146,17 +151,43 @@ class IBCOptionsFlow(OptionsFlow):
             return self.async_create_entry(
                 title="",
                 data={
-                    CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
+                    CONF_LIVE_SCAN_INTERVAL: int(user_input[CONF_LIVE_SCAN_INTERVAL]),
+                    CONF_ERROR_LOG_SCAN_INTERVAL: int(
+                        user_input[CONF_ERROR_LOG_SCAN_INTERVAL]
+                    ),
+                    CONF_LIFETIME_SCAN_INTERVAL: int(
+                        user_input[CONF_LIFETIME_SCAN_INTERVAL]
+                    ),
+                    CONF_SICC_SCAN_INTERVAL: int(user_input[CONF_SICC_SCAN_INTERVAL]),
                 },
             )
 
-        current = self.config_entry.options.get(
-            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-        )
+        options = self.config_entry.options
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_SCAN_INTERVAL, default=current
+                    CONF_LIVE_SCAN_INTERVAL,
+                    default=options.get(
+                        CONF_LIVE_SCAN_INTERVAL, DEFAULT_LIVE_SCAN_INTERVAL
+                    ),
+                ): _scan_interval_selector(),
+                vol.Required(
+                    CONF_ERROR_LOG_SCAN_INTERVAL,
+                    default=options.get(
+                        CONF_ERROR_LOG_SCAN_INTERVAL, DEFAULT_ERROR_LOG_SCAN_INTERVAL
+                    ),
+                ): _scan_interval_selector(),
+                vol.Required(
+                    CONF_LIFETIME_SCAN_INTERVAL,
+                    default=options.get(
+                        CONF_LIFETIME_SCAN_INTERVAL, DEFAULT_LIFETIME_SCAN_INTERVAL
+                    ),
+                ): _scan_interval_selector(),
+                vol.Required(
+                    CONF_SICC_SCAN_INTERVAL,
+                    default=options.get(
+                        CONF_SICC_SCAN_INTERVAL, DEFAULT_SICC_SCAN_INTERVAL
+                    ),
                 ): _scan_interval_selector(),
             }
         )

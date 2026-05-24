@@ -3,10 +3,9 @@
     "step": {
       "user": {
         "title": "Add IBC Boiler",
-        "description": "Enter the boiler's hostname or IP address. The boiler must be reachable from Home Assistant on the local network.",
+        "description": "Enter the boiler's hostname or IP address. The boiler must be reachable from Home Assistant on the local network. Scan intervals can be tuned after setup.",
         "data": {
-          "host": "Host or IP address",
-          "scan_interval": "Scan interval (seconds)"
+          "host": "Host or IP address"
         }
       }
     },
@@ -23,9 +22,13 @@
   "options": {
     "step": {
       "init": {
-        "title": "IBC Boiler options",
+        "title": "IBC Boiler scan intervals",
+        "description": "Each endpoint is polled independently. Faster intervals pull more data from the boiler; slower intervals reduce load.",
         "data": {
-          "scan_interval": "Scan interval (seconds)"
+          "live_scan_interval": "Live data (s) — temperatures, pressures, status (or=19)",
+          "error_log_scan_interval": "Error log (s) — most recent log entry, event notifications (or=7)",
+          "lifetime_scan_interval": "Lifetime counters (s) — power-on hours, burner starts (or=6)",
+          "sicc_scan_interval": "Flame / SICC module (s) — flame current, SICC voltages (or=44)"
         }
       }
     }
@@ -38,7 +41,8 @@
       "stack_temp": { "name": "Stack Temperature" },
       "outdoor_temp": { "name": "Outdoor Temperature" },
       "indoor_temp": { "name": "Indoor Temperature" },
-      "tank_temp": { "name": "Tank Temperature" },
+      "air_temp": { "name": "Air Temperature" },
+      "secondary_temp": { "name": "Secondary Temperature" },
       "inlet_pressure": { "name": "Inlet Pressure" },
       "outlet_pressure": { "name": "Outlet Pressure" },
       "delta_pressure": { "name": "Delta Pressure" },
@@ -46,7 +50,19 @@
       "cycles": { "name": "Cycles" },
       "status": { "name": "Status" },
       "error_code": { "name": "Error Code" },
-      "last_error": { "name": "Last Error" }
+      "active_faults": { "name": "Active Faults" },
+      "active_warnings": { "name": "Active Warnings" },
+      "power_on_hours": { "name": "Power-On Hours" },
+      "burner_on_hours": { "name": "Burner Hours" },
+      "burner_starts": { "name": "Burner Starts" },
+      "ignition_trials": { "name": "Ignition Trials" },
+      "lifetime_errors": { "name": "Lifetime Errors" },
+      "lifetime_warnings": { "name": "Lifetime Warnings" },
+      "log_entries": { "name": "Log Entries" },
+      "flame_current": { "name": "Flame Current" },
+      "sicc_power": { "name": "SICC Power" },
+      "sicc_online": { "name": "SICC Online" },
+      "last_error": { "name": "Last Logged Error" }
     }
   }
 }

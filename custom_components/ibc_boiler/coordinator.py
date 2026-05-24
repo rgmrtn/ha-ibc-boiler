@@ -1,8 +1,18 @@
-"""DataUpdateCoordinator and per-entry runtime data for IBC Boiler."""
+"""Per-endpoint DataUpdateCoordinators and runtime data for IBC Boiler.
+
+The v0.4 refactor splits the original single-coordinator polling into one
+coordinator per HTTP endpoint so each can be tuned independently (live data
+ticks every 30s, lifetime counters every 5 min, etc.). The live coordinator
+drives device availability — it raises `UpdateFailed` on transient errors
+so entities go unavailable as a group. The other coordinators fail quiet:
+they catch transport errors at debug level and reuse the previous payload,
+so a flaky or=6 or or=44 doesn't flicker the lifetime/flame sensors.
+"""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, TypeAlias
@@ -13,9 +23,19 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import IBCApiClient, IBCConnectionError, IBCResponseError
 from .const import (
-    CONF_SCAN_INTERVAL,
-    DEFAULT_SCAN_INTERVAL,
+    CONF_ERROR_LOG_SCAN_INTERVAL,
+    CONF_LIFETIME_SCAN_INTERVAL,
+    CONF_LIVE_SCAN_INTERVAL,
+    CONF_SICC_SCAN_INTERVAL,
+    DEFAULT_ERROR_LOG_SCAN_INTERVAL,
+    DEFAULT_LIFETIME_SCAN_INTERVAL,
+    DEFAULT_LIVE_SCAN_INTERVAL,
+    DEFAULT_SICC_SCAN_INTERVAL,
     DOMAIN,
+    ENDPOINT_ERROR_LOG,
+    ENDPOINT_LIFETIME,
+    ENDPOINT_LIVE,
+    ENDPOINT_SICC,
     EVENT_ERROR_LOGGED,
     NOT_CONNECTED_SENTINEL,
     OR_ERROR_LOG,
@@ -58,13 +78,137 @@ def _entry_key(entry: dict[str, Any]) -> tuple:
     )
 
 
-class IBCDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Polls the boiler's live-data object (or=19) on every tick.
+FetchFn = Callable[[], Awaitable[dict[str, Any]]]
 
-    Also opportunistically fetches the most recent error log entry
-    (or=7 object_index=1) on the same tick. A failure on the log fetch
-    is logged but does not fail the update — live data is the source of
-    truth for "is the boiler reachable".
+
+class IBCEndpointCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Polls a single bc2-cgi endpoint on a fixed interval.
+
+    Subclasses provide a fetch callable + failure policy. Live data raises
+    `UpdateFailed` so HA marks its sensors unavailable; the slow / optional
+    endpoints catch transport errors and keep the previous payload so a
+    transient blip doesn't blank entities that only update on the order of
+    minutes.
+    """
+
+    fail_loud: bool = False
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: IBCApiClient,
+        *,
+        endpoint_id: str,
+        fetch_fn: FetchFn,
+        scan_interval: int,
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN} {client.host} {endpoint_id}",
+            update_interval=timedelta(seconds=scan_interval),
+        )
+        self._client = client
+        self._fetch_fn = fetch_fn
+        self.endpoint_id = endpoint_id
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        try:
+            return await self._fetch_fn()
+        except IBCConnectionError as err:
+            if self.fail_loud:
+                raise UpdateFailed(f"Cannot reach boiler: {err}") from err
+            _LOGGER.debug(
+                "%s fetch failed (connection): %s — keeping last payload",
+                self.endpoint_id,
+                err,
+            )
+            return self.data or {}
+        except IBCResponseError as err:
+            if self.fail_loud:
+                raise UpdateFailed(f"Bad response from boiler: {err}") from err
+            _LOGGER.debug(
+                "%s fetch failed (response): %s — keeping last payload",
+                self.endpoint_id,
+                err,
+            )
+            return self.data or {}
+
+
+class IBCLiveCoordinator(IBCEndpointCoordinator):
+    """or=19 live data — drives device availability."""
+
+    fail_loud = True
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: IBCApiClient,
+    ) -> None:
+        scan_interval = int(
+            entry.options.get(CONF_LIVE_SCAN_INTERVAL, DEFAULT_LIVE_SCAN_INTERVAL)
+        )
+        super().__init__(
+            hass,
+            client,
+            endpoint_id=ENDPOINT_LIVE,
+            fetch_fn=client.async_get_live,
+            scan_interval=scan_interval,
+        )
+
+
+class IBCLifetimeCoordinator(IBCEndpointCoordinator):
+    """or=6 lifetime counters — fail quiet, ticks at ~hour boundaries anyway."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: IBCApiClient,
+    ) -> None:
+        scan_interval = int(
+            entry.options.get(
+                CONF_LIFETIME_SCAN_INTERVAL, DEFAULT_LIFETIME_SCAN_INTERVAL
+            )
+        )
+        super().__init__(
+            hass,
+            client,
+            endpoint_id=ENDPOINT_LIFETIME,
+            fetch_fn=client.async_get_lifetime,
+            scan_interval=scan_interval,
+        )
+
+
+class IBCSiccCoordinator(IBCEndpointCoordinator):
+    """or=44 flame/SICC diagnostics — fail quiet."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: IBCApiClient,
+    ) -> None:
+        scan_interval = int(
+            entry.options.get(CONF_SICC_SCAN_INTERVAL, DEFAULT_SICC_SCAN_INTERVAL)
+        )
+        super().__init__(
+            hass,
+            client,
+            endpoint_id=ENDPOINT_SICC,
+            fetch_fn=client.async_get_sicc,
+            scan_interval=scan_interval,
+        )
+
+
+class IBCErrorLogCoordinator(IBCEndpointCoordinator):
+    """or=7 object_index=1 — most-recent error log entry + event firing.
+
+    Holds the decoded message / raw entry on itself so the `last_error`
+    sensor can read them as plain attributes (it doesn't read `data`).
+    Fires `ibc_boiler_error_logged` on entry-tuple change; the first
+    observation after restart is the baseline and is silent.
     """
 
     def __init__(
@@ -73,14 +217,18 @@ class IBCDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entry: ConfigEntry,
         client: IBCApiClient,
     ) -> None:
-        scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        scan_interval = int(
+            entry.options.get(
+                CONF_ERROR_LOG_SCAN_INTERVAL, DEFAULT_ERROR_LOG_SCAN_INTERVAL
+            )
+        )
         super().__init__(
             hass,
-            _LOGGER,
-            name=f"{DOMAIN} {client.host}",
-            update_interval=timedelta(seconds=scan_interval),
+            client,
+            endpoint_id=ENDPOINT_ERROR_LOG,
+            fetch_fn=self._fetch_log_entry,
+            scan_interval=scan_interval,
         )
-        self._client = client
         self._entry = entry
 
         # Model identifiers — set by __init__.py after the info fetch so
@@ -101,37 +249,18 @@ class IBCDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Provide model info gathered at setup; affects decoded message text."""
         self.model = model
         self.model_num = model_num
-        # If we polled or=7 before model info was set, redecode so the
-        # sensor shows the model-correct message without waiting a tick.
         if self.last_error_entry is not None:
             self.last_error_message = decode_error_entry(
                 self.last_error_entry, model=self.model, model_num=self.model_num
             )
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        try:
-            live = await self._client.async_get_live()
-        except IBCConnectionError as err:
-            raise UpdateFailed(f"Cannot reach boiler: {err}") from err
-        except IBCResponseError as err:
-            raise UpdateFailed(f"Bad response from boiler: {err}") from err
-
-        # Best-effort log poll. Don't let a failure here mask live data.
-        try:
-            log_entry = await self._client.async_query(
-                OR_ERROR_LOG, object_index=1
-            )
-        except (IBCConnectionError, IBCResponseError) as err:
-            _LOGGER.debug("error-log fetch (or=7 idx=1) failed: %s", err)
-        else:
-            self._process_log_entry(log_entry)
-
-        return live
+    async def _fetch_log_entry(self) -> dict[str, Any]:
+        entry = await self._client.async_query(OR_ERROR_LOG, object_index=1)
+        self._process_log_entry(entry)
+        return entry
 
     def _process_log_entry(self, entry: dict[str, Any]) -> None:
         if is_empty_slot(entry):
-            # Brand-new boiler / fresh log — nothing to surface, but still
-            # mark the baseline so a future first event fires.
             self._baseline_set = True
             return
 
@@ -143,7 +272,6 @@ class IBCDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.last_error_message = message
 
         if not self._baseline_set:
-            # First observation after restart/setup — anchor without firing.
             self._last_error_key = key
             self._baseline_set = True
             return
@@ -188,9 +316,17 @@ class IBCRuntimeData:
     """All per-entry state, attached to ConfigEntry.runtime_data."""
 
     client: IBCApiClient
-    coordinator: IBCDataUpdateCoordinator
+    coordinators: dict[str, IBCEndpointCoordinator]
     info: dict[str, Any]
     network: dict[str, Any]
+
+    @property
+    def live(self) -> IBCLiveCoordinator:
+        return self.coordinators[ENDPOINT_LIVE]  # type: ignore[return-value]
+
+    @property
+    def error_log(self) -> IBCErrorLogCoordinator:
+        return self.coordinators[ENDPOINT_ERROR_LOG]  # type: ignore[return-value]
 
 
 IBCConfigEntry: TypeAlias = ConfigEntry[IBCRuntimeData]

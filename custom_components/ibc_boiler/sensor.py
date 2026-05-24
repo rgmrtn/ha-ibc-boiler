@@ -1,4 +1,11 @@
-"""Sensor platform for IBC V-10-platform boilers (object_request 19)."""
+"""Sensor platform for IBC V-10-platform boilers.
+
+Sensors are described declaratively (`IBCSensorEntityDescription`) and each
+description names the endpoint coordinator it reads from. v0.4 wires
+descriptions to four endpoints: live (or=19), lifetime (or=6), sicc (or=44),
+and error log (or=7) — the last one only feeds the dedicated `last_error`
+sensor.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +21,11 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     EntityCategory,
+    UnitOfElectricCurrent,
+    UnitOfPower,
     UnitOfPressure,
     UnitOfTemperature,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import (
@@ -31,10 +41,19 @@ from .const import (
     CONF_HOST,
     DEFAULT_MODEL,
     DOMAIN,
+    ENDPOINT_ERROR_LOG,
+    ENDPOINT_LIFETIME,
+    ENDPOINT_LIVE,
+    ENDPOINT_SICC,
     MANUFACTURER,
     NOT_CONNECTED_SENTINEL,
 )
-from .coordinator import IBCConfigEntry, IBCDataUpdateCoordinator, IBCRuntimeData
+from .coordinator import (
+    IBCConfigEntry,
+    IBCEndpointCoordinator,
+    IBCErrorLogCoordinator,
+    IBCRuntimeData,
+)
 
 
 def _as_float(value: Any) -> float | None:
@@ -79,17 +98,59 @@ def _str_or_none(value: Any) -> str | None:
     return text or None
 
 
+def _fault_text(value: Any) -> str | None:
+    """Live faults/warnings text. The V-10 returns the literal string "None"
+    when no fault/warning is asserted — translate to a real None so HA shows
+    `unknown` (or the empty state) instead of the misleading word "None"."""
+    text = _str_or_none(value)
+    if text is None or text.lower() == "none":
+        return None
+    return text
+
+
+def _flame_current(value: Any) -> float | None:
+    """SIP_FlameCurrent → µA. The boiler's own error.js divides by 249 to
+    render the value, so we do the same."""
+    f = _as_float(value)
+    if f is None:
+        return None
+    return round(f / 249, 2)
+
+
+def _online_state(value: Any) -> str | None:
+    """SIP_Online → "online" / "offline" text (bool-shaped int)."""
+    i = _as_int(value)
+    if i is None:
+        return None
+    return "online" if i else "offline"
+
+
 @dataclass(frozen=True, kw_only=True)
 class IBCSensorEntityDescription(SensorEntityDescription):
-    """SensorEntityDescription with a value extractor over the live-data dict."""
+    """SensorEntityDescription bound to one endpoint coordinator."""
 
+    endpoint: str
     value_fn: Callable[[dict[str, Any]], StateType]
+    # Optional extra state attributes (e.g. raw bitfields for active_faults).
+    attributes_fn: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
+
+
+def _active_faults_attrs(d: dict[str, Any]) -> dict[str, Any] | None:
+    return {
+        "major_err": _as_int(d.get("MajorError")),
+        "minor_err": _as_int(d.get("MinorError")),
+        "system_err": _as_int(d.get("SystemError")),
+        "combi_err": _as_int(d.get("CombiError")),
+        "warn_flags": _as_int(d.get("WarnFlags")),
+    }
 
 
 SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
+    # ----- Live data (or=19) ------------------------------------------------
     IBCSensorEntityDescription(
         key="supply_temp",
         translation_key="supply_temp",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -98,6 +159,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="return_temp",
         translation_key="return_temp",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -106,6 +168,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="target_temp",
         translation_key="target_temp",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -114,6 +177,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="stack_temp",
         translation_key="stack_temp",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -122,6 +186,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="outdoor_temp",
         translation_key="outdoor_temp",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -130,22 +195,36 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="indoor_temp",
         translation_key="indoor_temp",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         value_fn=lambda d: _temp(d.get("IndoorT")),
     ),
     IBCSensorEntityDescription(
-        key="tank_temp",
-        translation_key="tank_temp",
+        key="air_temp",
+        translation_key="air_temp",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        value_fn=lambda d: _temp(d.get("TankT")),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _temp(d.get("AirT")),
+    ),
+    IBCSensorEntityDescription(
+        key="secondary_temp",
+        translation_key="secondary_temp",
+        endpoint=ENDPOINT_LIVE,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _temp(d.get("SecondaryT")),
     ),
     IBCSensorEntityDescription(
         key="inlet_pressure",
         translation_key="inlet_pressure",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.PRESSURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPressure.PSI,
@@ -154,6 +233,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="outlet_pressure",
         translation_key="outlet_pressure",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.PRESSURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPressure.PSI,
@@ -162,6 +242,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="delta_pressure",
         translation_key="delta_pressure",
+        endpoint=ENDPOINT_LIVE,
         device_class=SensorDeviceClass.PRESSURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPressure.PSI,
@@ -170,6 +251,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="power_output",
         translation_key="power_output",
+        endpoint=ENDPOINT_LIVE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="MBH",
         value_fn=lambda d: _as_float(d.get("MBH")),
@@ -177,6 +259,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="cycles",
         translation_key="cycles",
+        endpoint=ENDPOINT_LIVE,
         state_class=SensorStateClass.TOTAL_INCREASING,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: _as_int(d.get("Cycles")),
@@ -184,14 +267,118 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
     IBCSensorEntityDescription(
         key="status",
         translation_key="status",
+        endpoint=ENDPOINT_LIVE,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: _str_or_none(d.get("Status")),
     ),
     IBCSensorEntityDescription(
         key="error_code",
         translation_key="error_code",
+        endpoint=ENDPOINT_LIVE,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: _as_int(d.get("ErrorCode")),
+    ),
+    IBCSensorEntityDescription(
+        key="active_faults",
+        translation_key="active_faults",
+        endpoint=ENDPOINT_LIVE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _fault_text(d.get("Errors")),
+        attributes_fn=_active_faults_attrs,
+    ),
+    IBCSensorEntityDescription(
+        key="active_warnings",
+        translation_key="active_warnings",
+        endpoint=ENDPOINT_LIVE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _fault_text(d.get("Warnings")),
+    ),
+    # ----- Lifetime counters (or=6) -----------------------------------------
+    IBCSensorEntityDescription(
+        key="power_on_hours",
+        translation_key="power_on_hours",
+        endpoint=ENDPOINT_LIFETIME,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("PowerOnHrs")),
+    ),
+    IBCSensorEntityDescription(
+        key="burner_on_hours",
+        translation_key="burner_on_hours",
+        endpoint=ENDPOINT_LIFETIME,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("BurnerOnHrs")),
+    ),
+    IBCSensorEntityDescription(
+        key="burner_starts",
+        translation_key="burner_starts",
+        endpoint=ENDPOINT_LIFETIME,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("Starts")),
+    ),
+    IBCSensorEntityDescription(
+        key="ignition_trials",
+        translation_key="ignition_trials",
+        endpoint=ENDPOINT_LIFETIME,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("Trials")),
+    ),
+    IBCSensorEntityDescription(
+        key="lifetime_errors",
+        translation_key="lifetime_errors",
+        endpoint=ENDPOINT_LIFETIME,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("Errors")),
+    ),
+    IBCSensorEntityDescription(
+        key="lifetime_warnings",
+        translation_key="lifetime_warnings",
+        endpoint=ENDPOINT_LIFETIME,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("Warnings")),
+    ),
+    IBCSensorEntityDescription(
+        key="log_entries",
+        translation_key="log_entries",
+        endpoint=ENDPOINT_LIFETIME,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("LogEntries")),
+    ),
+    # ----- Flame / SICC (or=44) ---------------------------------------------
+    IBCSensorEntityDescription(
+        key="flame_current",
+        translation_key="flame_current",
+        endpoint=ENDPOINT_SICC,
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.MICROAMPERE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _flame_current(d.get("SIP_FlameCurrent")),
+    ),
+    IBCSensorEntityDescription(
+        key="sicc_power",
+        translation_key="sicc_power",
+        endpoint=ENDPOINT_SICC,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_float(d.get("FCP_Power")),
+    ),
+    IBCSensorEntityDescription(
+        key="sicc_online",
+        translation_key="sicc_online",
+        endpoint=ENDPOINT_SICC,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _online_state(d.get("SIP_Online")),
     ),
 )
 
@@ -233,23 +420,35 @@ async def async_setup_entry(
 ) -> None:
     runtime = entry.runtime_data
     device_info = _build_device_info(entry, runtime)
+
     entities: list[SensorEntity] = [
-        IBCSensor(runtime.coordinator, entry, description, device_info)
+        IBCSensor(
+            runtime.coordinators[description.endpoint],
+            entry,
+            description,
+            device_info,
+        )
         for description in SENSOR_DESCRIPTIONS
     ]
-    entities.append(IBCLastErrorSensor(runtime.coordinator, entry, device_info))
+    entities.append(
+        IBCLastErrorSensor(
+            runtime.coordinators[ENDPOINT_ERROR_LOG],  # type: ignore[arg-type]
+            entry,
+            device_info,
+        )
+    )
     async_add_entities(entities)
 
 
-class IBCSensor(CoordinatorEntity[IBCDataUpdateCoordinator], SensorEntity):
-    """A single sensor backed by a value_fn over the live-data dict."""
+class IBCSensor(CoordinatorEntity[IBCEndpointCoordinator], SensorEntity):
+    """A single sensor backed by a value_fn over its coordinator's payload."""
 
     _attr_has_entity_name = True
     entity_description: IBCSensorEntityDescription
 
     def __init__(
         self,
-        coordinator: IBCDataUpdateCoordinator,
+        coordinator: IBCEndpointCoordinator,
         entry: IBCConfigEntry,
         description: IBCSensorEntityDescription,
         device_info: DeviceInfo,
@@ -266,8 +465,18 @@ class IBCSensor(CoordinatorEntity[IBCDataUpdateCoordinator], SensorEntity):
             return None
         return self.entity_description.value_fn(data)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        attrs_fn = self.entity_description.attributes_fn
+        if attrs_fn is None:
+            return None
+        data = self.coordinator.data
+        if not isinstance(data, dict):
+            return None
+        return attrs_fn(data)
 
-class IBCLastErrorSensor(CoordinatorEntity[IBCDataUpdateCoordinator], SensorEntity):
+
+class IBCLastErrorSensor(CoordinatorEntity[IBCErrorLogCoordinator], SensorEntity):
     """Most-recent boiler error log entry (object_request 7, object_index 1).
 
     State is the decoded message that matches the boiler's own web UI.
@@ -286,7 +495,7 @@ class IBCLastErrorSensor(CoordinatorEntity[IBCDataUpdateCoordinator], SensorEnti
 
     def __init__(
         self,
-        coordinator: IBCDataUpdateCoordinator,
+        coordinator: IBCErrorLogCoordinator,
         entry: IBCConfigEntry,
         device_info: DeviceInfo,
     ) -> None:

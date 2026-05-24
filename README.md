@@ -35,18 +35,22 @@ Plain HTTP on the LAN, no auth on the CGI itself. The integration is `local_poll
 
 ## Configuration
 
-Set during the **Add Integration** flow (and editable later via **Configure**):
+The **Add Integration** flow only asks for the boiler's host. After the device is set up, four independent scan intervals are editable from **Settings → Devices & Services → IBC Boiler → Configure**:
 
-| Field | Default | Notes |
+| Endpoint | Default | What it polls |
 |---|---|---|
-| Host | - | IP or hostname of the boiler. |
-| Scan interval | 30 s | Range 10–600 s. The boiler's data doesn't move fast; don't poll harder than you need to. |
+| Live data (`live_scan_interval`) | 30 s | Temperatures, pressures, current status, active faults/warnings (or=19). |
+| Error log (`error_log_scan_interval`) | 60 s | Most-recent boiler log entry; the `ibc_boiler_error_logged` event fires when a new entry shows up (or=7). |
+| Lifetime counters (`lifetime_scan_interval`) | 300 s | Power-on hours, burner hours/starts/trials, lifetime error/warning totals (or=6). These only tick at hour boundaries, so polling faster is wasteful. |
+| Flame / SICC module (`sicc_scan_interval`) | 30 s | Flame current and SICC diagnostics (or=44). |
+
+All intervals are bounded `[10, 3600]` seconds. Each endpoint runs on its own coordinator, so a transient failure on one (say, or=44) won't blank entities backed by another.
 
 ## Entities created
 
 One device per boiler. The boiler's `model` and firmware version are read from the V-10 controller and used for the device card; the MAC address (also read from the controller) is used as the stable unique identifier so the integration survives a DHCP-induced IP change.
 
-Sensors:
+### Live data (or=19)
 
 - Supply Temperature
 - Return Temperature
@@ -54,7 +58,8 @@ Sensors:
 - Stack Temperature
 - Outdoor Temperature
 - Indoor Temperature
-- Tank Temperature - combi DHW
+- Air Temperature (diagnostic)
+- Secondary Temperature (diagnostic)
 - Inlet Pressure (psi)
 - Outlet Pressure (psi)
 - Delta Pressure (psi)
@@ -62,9 +67,36 @@ Sensors:
 - Cycles (diagnostic, total-increasing)
 - Status (diagnostic, text)
 - Error Code (diagnostic)
-- Last Error (diagnostic, text) - decoded text of the most recent entry in the boiler's error log, matching what the boiler's own web UI shows. Raw bits (`major_err`, `minor_err`, `system_err`, `combi_err`, `sim_status`) plus timestamp and the conditions at the time of the fault (fan RPM, inlet/outlet/board temp, inlet pressure) are exposed as entity attributes.
+- Active Faults (diagnostic, text) - decoded text of currently asserted faults (matches the boiler's web UI). Raw bitfields (`major_err`, `minor_err`, `system_err`, `combi_err`, `warn_flags`) are exposed as entity attributes.
+- Active Warnings (diagnostic, text)
+
+### Lifetime counters (or=6)
+
+- Power-On Hours (diagnostic, total-increasing)
+- Burner Hours (diagnostic, total-increasing)
+- Burner Starts (diagnostic, total-increasing)
+- Ignition Trials (diagnostic, total-increasing)
+- Lifetime Errors (diagnostic, total-increasing)
+- Lifetime Warnings (diagnostic, total-increasing)
+- Log Entries (diagnostic) - count of entries currently in the boiler's rolling log.
+
+### Flame / SICC module (or=44)
+
+- Flame Current (diagnostic, µA) - SIP_FlameCurrent / 249, matching the divisor used by the boiler's own JS to render flame current.
+- SICC Power (diagnostic, W) - FCP_Power.
+- SICC Online (diagnostic, text: `online` / `offline`) - SIP_Online flag.
+
+### Error log (or=7)
+
+- Last Logged Error (diagnostic, text) - decoded text of the most recent entry in the boiler's error log, matching what the boiler's own web UI shows. Raw bits (`major_err`, `minor_err`, `system_err`, `combi_err`, `sim_status`) plus timestamp and the conditions at the time of the fault (fan RPM, inlet/outlet/board temp, inlet pressure) are exposed as entity attributes.
 
 Temperatures are reported in °C (the V-10's native unit — see `docs/protocol.md`). Home Assistant converts to °F automatically if your profile is set to imperial. Temperatures from sensors that aren't wired up read as `unknown` rather than the V-10's `-32766` sentinel value.
+
+### Upgrading from v0.3
+
+- The single `scan_interval` option auto-migrates to `live_scan_interval` (and `sicc_scan_interval`); `error_log_scan_interval` is clamped to at least 60 s, and `lifetime_scan_interval` is reset to the new 300 s default. Existing entities keep their unique IDs.
+- **Breaking:** the boiler-level **Tank Temperature** sensor is removed. The reading always showed `unknown` on combi boilers because the V-10 returns the tank temperature per-load, not on the global object. It will return on the per-combi-load device in v0.5.
+- The existing **Last Error** sensor is renamed to **Last Logged Error** in the UI; its `unique_id` is unchanged, so any automations referencing it by entity ID keep working.
 
 ## Error notifications
 

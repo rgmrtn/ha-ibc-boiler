@@ -38,21 +38,21 @@ the error envelope `{ "rbid": 0, "object_no": 201, "fail_code": -1, "operation":
 
 | code | content | needs index/load |
 |---:|---|---|
-| 6 | Lifetime counters (`PowerOnHrs`, `BurnerOnHrs`, `Starts`, `Cycles`, `Errors`, ...) | — |
+| 6 | Lifetime counters (`PowerOnHrs`, `BurnerOnHrs`, `Load1OnTime`..`Load5OnTime`, `RemoteOnTime`, `Starts`, `Trials`, `Errors`, `Warnings`, `LogEntries`, `Cycles`, `BiasCount`). Counters tick on hour boundaries (`PowerOnHrs`/`BurnerOnHrs`/`LoadXOnTime`) or per discrete event — polling faster than ~5 min is wasteful. | — |
 | 7 | Error/event log entry (`log_no`, `Date`, `Time`, `MinErr`, `MajErr`, `SysErr`, `CombiErr`, `SIM_Status`, `FanRPM`, `InletTemp`, `OutletTemp`, `BoardTemp`, `InletPressure`, `Altitude`, ...) | `object_index` 1..35 |
 | 11 | Device info — `model`, `fwversion`, `fwdate`, `imperial`, `model_num`, `designT`, `boiler_id`, `sicc_module` | — |
-| 13 | Per-load type + emitter (Load1Type..Load5Type, SB1Enable..SB4Enable, Occupied, Imperial) | — |
+| 13 | Per-load type + emitter (Load1Type..Load5Type, SB1Enable..SB4Enable, Occupied, Imperial). `LoadXType` values map to friendly names via `LoadNameFromNum()` in `/custom/js/ibc-cmn.js`: 0=Off, 1=DHW, 2=Reset Heating, 3=Set Point, 4=External Control, 5=Manual Control, 6=Zone Of. Value 7 ("On-Demand DHW") appears on Load 5 of combi boilers (`model_num` 23/24) and is labelled directly by the UI rather than through `LoadNameFromNum`. | — |
 | 15 | Combustion/installation config (Altitude, Barometric, VarSpeedMin/Max, VentType) | — |
-| 16 | Per-load configuration (LoadType, SupplySetPoint, MaxSupplyT, ...) | `object_index` = load |
+| 16 | Per-load configuration. **Response shape depends on `LoadType`.** `LoadType: 0` (Off) returns a minimal `{load_no, LoadType, OptOutType}` payload (see `or16_idx02.json`). `LoadType: 3` (Set Point) returns the full heating-zone schema with `SupplySetPoint`, `MaxSupplyT`, `SupplyDiffT`, `SummerOff`, `PumpPurgeTime`, `ValveFullSwing`, `Priority`, `WaterTFrom`, `MixingTFrom`, `RampTime`, `PumpOn`, `BurnerOnFrom`, `TankT`, `TankDiffT`, `TankTFrom`. `LoadType: 7` (combi/On-Demand DHW) returns `{Active, OutputTarget, MaxSupplyT, MinSupplyT, FastHeatMode, lowDiffTemp, highDiffTemp, pGain, iGain, dGain, fffGain, minDelta}`. **Reads use `object_index` for the load selector; writes use `load_no` (different parameter name).** | `object_index` = load (read) / `load_no` (write) |
 | 17 | Master/cascade config (MasterBoiler, BoilerID, StagingDelay, ...) | — |
-| **19** | **Live status — primary live-data endpoint.** `Status`, `Status_Enum`, `Warnings`, `Errors`, `ErrorCode`, `MBH`, `SupplyT`, `ReturnT`, `TargetT`, `StackT`, `AirT`, `IndoorT`, `OutdoorT`, `SecondaryT`, `TankT`, `InletPressure`, `OutletPressure`, `DeltaPressure`, `CombiMode`, `Cycles`, `MajorError`, `MinorError`, `SystemError`, `CombiError`, `WarnFlags`, `Pumps`, `IsActiveMaster`, `OpStatus` | — |
+| **19** | **Live status — primary live-data endpoint.** `Status`, `Status_Enum`, `Warnings`, `Errors`, `ErrorCode`, `MBH`, `SupplyT`, `ReturnT`, `TargetT`, `StackT`, `AirT`, `IndoorT`, `OutdoorT`, `SecondaryT`, `TankT`, `InletPressure`, `OutletPressure`, `DeltaPressure`, `CombiMode`, `Cycles`, `MajorError`, `MinorError`, `SystemError`, `CombiError`, `WarnFlags`, `Pumps`, `Servicing`, `IsActiveMaster`, `OpStatus`. See "Servicing bitfield" below for per-load pump/calling decoding. The `Pumps` integer is exposed but **not used by the web UI** — prefer `Servicing` for per-load status. | — |
 | 20 | Combustion/fan detail (InletP, OutletP, FanSpeed, FanDuty, FanTarget, Firing, PID gains, ...) | — |
 | 21 | Burner test parameters | — |
 | 24 | Date/time/timezone | — |
 | 27 | Active load + secondary temperature set | — |
 | 32 | Per-zone runtime (Load, Type, HeatOut, SupplyT, ReturnT, Temperature1..6) | `load_no` 1..5 |
 | 34 | Network/identity — `mac`, `ipaddr`, `ipmask`, `ipgate`, `ipdns`, `site_name`, `boiler_id`, `network_id`, `bacnet_id`, `portal_status` | — |
-| 44 | Flame/SIP/FCP diagnostics (SIP_FlameCurrent, FCP_dcV, FCP_mA, FCP_acV, FCP_Power, ...) | — |
+| 44 | Flame/SIP/FCP diagnostics (`SIP_FlameCurrent`, `SIP_FlameOut`, `SIP_Online`, `SIP_Info`, `SIP_Checksum`, `SIP_Status`, `FCP_dcV`, `FCP_mA`, `FCP_PmA`, `FCP_acV`, `FCP_IDSense`, `FCP_Power`, `FCP_Info`, `FCP_Checksum`, `FCP_Status`). `SIP_FlameCurrent` is displayed by the boiler's own `error.js` as `parseFloat(SIM_Flame / 249).toFixed(2)` µA — the same divisor (249) applies to `SIP_FlameCurrent` here. `SIP_Online` is a 0/1 flag. | — |
 
 ## Response envelope
 
@@ -112,6 +112,29 @@ that includes:
   empty (never-used) slot above the actual log depth. The web UI silently
   skips these and the HA integration does the same.
 
+## Servicing bitfield (or=19)
+
+The `Servicing` integer in or=19 packs per-load status flags. Ported
+from `custom/js/index.js:428-449`:
+
+```
+bit (load_no - 1)        Servicing flag (load is in service mode)
+bit (load_no - 1) + 8    Circulating (load's pump is running)
+bit (load_no - 1) + 16   Calling (load is calling for heat)
+```
+
+Loads are numbered 1..5 on current firmware (≥ 2.01), so the active
+bit ranges are 0..4 (Servicing), 8..12 (Circulating), 16..20 (Calling).
+The legacy `js/index.js` uses a narrower 0..3 / 4..7 / 8..11 layout
+for 4-load older boards.
+
+Special whole-field values the UI interprets specially:
+- `Servicing == 0xFFFF` → "Remote" mode.
+- `Servicing & 0xFF0000` (any bit 16..23 set) → "Summer Off". This
+  check overlaps the per-load Calling bits in current firmware — the
+  UI shows "Summer Off" in preference to per-load Calling when both
+  apply.
+
 ## Error-log decoding (or=7)
 
 Each `object_request: 7` slot carries a set of bit-mask fields that the
@@ -154,6 +177,7 @@ document:
 | `or16_idx01.json` | `SupplySetPoint: 307` confirms quarter-°C scaling on per-load config (307 / 4 = 76.75 °C = 170 °F). |
 | `or32_load01.json` | `Temperature5: 307` mirrors the or=16 setpoint, confirming the encoding is consistent across objects. |
 | `or07_idx01.json` | Error-log entry shape — `MajErr: 64` + `CombiErr: 1` on a combi boiler decodes to "No CBI"; demonstrates the `12/30/1999` date that appears when the RTC hadn't been set at the time of the event. |
+| `or16_idx02.json` | Per-load config for a disabled load (`LoadType: 0`) — minimal `{load_no, LoadType, OptOutType}` shape, contrasts with the full schemas in `or16_idx01.json` (Set Point) and similar combi captures. |
 
 Fresh samples for other object_request codes can be captured at any time —
 the boiler exposes the CGI without auth, so a single `curl` or `Invoke-WebRequest`

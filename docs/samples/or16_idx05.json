@@ -1,0 +1,20 @@
+{
+  "rbid": 0,
+  "dump": 16,
+  "object_no": 16,
+  "load_no": 5,
+  "LoadType": 7,
+  "OptOutType": 0,
+  "Active": 1,
+  "OutputTarget": 207,
+  "MaxSupplyT": 247,
+  "MinSupplyT": 180,
+  "FastHeatMode": 0,
+  "lowDiffTemp": 160,
+  "highDiffTemp": 28,
+  "pGain": 0.0,
+  "iGain": 0.0,
+  "dGain": 0.0,
+  "fffGain": 0.0,
+  "minDelta": 0.5
+}

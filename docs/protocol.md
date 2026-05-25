@@ -50,7 +50,7 @@ the error envelope `{ "rbid": 0, "object_no": 201, "fail_code": -1, "operation":
 | 21 | Burner test parameters | — |
 | 24 | Date/time/timezone | — |
 | 27 | Active load + secondary temperature set | — |
-| 32 | Per-zone runtime (Load, Type, HeatOut, SupplyT, ReturnT, Temperature1..6) | `load_no` 1..5 |
+| 32 | Per-zone runtime — `Load` (0-indexed, equals `load_no - 1` in the response), `Type` (same enum as or=13's LoadXType), `HeatOut` (MBH), `SupplyT`, `ReturnT`, `BoilerMax`, `BoilerDiff`, `Cycles`, `Priority`, `Temperature1..6` (per-LoadType semantics — left undocumented in this integration). The CGI selects the load via the `load_no` request parameter (1..5). See `or32_load01.json` and `or32_load05.json`. | `load_no` 1..5 |
 | 34 | Network/identity — `mac`, `ipaddr`, `ipmask`, `ipgate`, `ipdns`, `site_name`, `boiler_id`, `network_id`, `bacnet_id`, `portal_status` | — |
 | 44 | Flame/SIP/FCP diagnostics (`SIP_FlameCurrent`, `SIP_FlameOut`, `SIP_Online`, `SIP_Info`, `SIP_Checksum`, `SIP_Status`, `FCP_dcV`, `FCP_mA`, `FCP_PmA`, `FCP_acV`, `FCP_IDSense`, `FCP_Power`, `FCP_Info`, `FCP_Checksum`, `FCP_Status`). `SIP_FlameCurrent` is displayed by the boiler's own `error.js` as `parseFloat(SIM_Flame / 249).toFixed(2)` µA — the same divisor (249) applies to `SIP_FlameCurrent` here. `SIP_Online` is a 0/1 flag. | — |
 
@@ -175,9 +175,12 @@ document:
 | `or19.json` | Live-data shape; `TargetT: 207` demonstrates the quarter-°C encoding (207 / 4 = 51.75 °C = 125 °F). |
 | `or34.json` | Network identity used for the HA device's MAC connection. |
 | `or16_idx01.json` | `SupplySetPoint: 307` confirms quarter-°C scaling on per-load config (307 / 4 = 76.75 °C = 170 °F). |
+| `or16_idx05.json` | LoadType=7 (On-Demand DHW / combi) schema — different field set from LoadType=3 (e.g. `OutputTarget`, `MinSupplyT`, PID gains), demonstrating that or=16's response shape depends on the load's type. |
 | `or32_load01.json` | `Temperature5: 307` mirrors the or=16 setpoint, confirming the encoding is consistent across objects. |
 | `or07_idx01.json` | Error-log entry shape — `MajErr: 64` + `CombiErr: 1` on a combi boiler decodes to "No CBI"; demonstrates the `12/30/1999` date that appears when the RTC hadn't been set at the time of the event. |
 | `or16_idx02.json` | Per-load config for a disabled load (`LoadType: 0`) — minimal `{load_no, LoadType, OptOutType}` shape, contrasts with the full schemas in `or16_idx01.json` (Set Point) and similar combi captures. |
+| `or13.json` | Per-load type enumeration. Demonstrates the `LoadXType` numbering (here Load 1 = Set Point (3), Load 5 = On-Demand DHW (7), Loads 2..4 = Off (0)). |
+| `or32_load01.json` / `or32_load05.json` | Per-load runtime, one capture per enabled load. Shows the 0-indexed `Load` field in the response (0 → load_no 1, 4 → load_no 5) and confirms `Type` matches the LoadXType from or=13. |
 
 Fresh samples for other object_request codes can be captured at any time —
 the boiler exposes the CGI without auth, so a single `curl` or `Invoke-WebRequest`

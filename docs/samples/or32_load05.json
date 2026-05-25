@@ -1,0 +1,20 @@
+{
+  "rbid": 0,
+  "dump": 32,
+  "object_no": 32,
+  "Load": 4,
+  "Type": 7,
+  "HeatOut": 0,
+  "SupplyT": 192,
+  "ReturnT": 182,
+  "BoilerMax": 247,
+  "BoilerDiff": 1379,
+  "Cycles": 27,
+  "Priority": 0,
+  "Temperature1": 1,
+  "Temperature2": 207,
+  "Temperature3": 0,
+  "Temperature4": 180,
+  "Temperature5": 0,
+  "Temperature6": 0
+}

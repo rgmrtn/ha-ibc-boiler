@@ -28,10 +28,12 @@ from .const import (
     CONF_HOST,
     CONF_LIFETIME_SCAN_INTERVAL,
     CONF_LIVE_SCAN_INTERVAL,
+    CONF_LOAD_RUNTIME_SCAN_INTERVAL,
     CONF_SICC_SCAN_INTERVAL,
     DEFAULT_ERROR_LOG_SCAN_INTERVAL,
     DEFAULT_LIFETIME_SCAN_INTERVAL,
     DEFAULT_LIVE_SCAN_INTERVAL,
+    DEFAULT_LOAD_RUNTIME_SCAN_INTERVAL,
     DEFAULT_SICC_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
@@ -91,7 +93,7 @@ async def _resolve_unique_id(client: IBCApiClient, host: str) -> tuple[str, str]
 class IBCConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for IBC Boiler."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -126,6 +128,9 @@ class IBCConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_ERROR_LOG_SCAN_INTERVAL: DEFAULT_ERROR_LOG_SCAN_INTERVAL,
                         CONF_LIFETIME_SCAN_INTERVAL: DEFAULT_LIFETIME_SCAN_INTERVAL,
                         CONF_SICC_SCAN_INTERVAL: DEFAULT_SICC_SCAN_INTERVAL,
+                        CONF_LOAD_RUNTIME_SCAN_INTERVAL: (
+                            DEFAULT_LOAD_RUNTIME_SCAN_INTERVAL
+                        ),
                     },
                 )
 
@@ -159,6 +164,9 @@ class IBCOptionsFlow(OptionsFlow):
                         user_input[CONF_LIFETIME_SCAN_INTERVAL]
                     ),
                     CONF_SICC_SCAN_INTERVAL: int(user_input[CONF_SICC_SCAN_INTERVAL]),
+                    CONF_LOAD_RUNTIME_SCAN_INTERVAL: int(
+                        user_input[CONF_LOAD_RUNTIME_SCAN_INTERVAL]
+                    ),
                 },
             )
 
@@ -187,6 +195,13 @@ class IBCOptionsFlow(OptionsFlow):
                     CONF_SICC_SCAN_INTERVAL,
                     default=options.get(
                         CONF_SICC_SCAN_INTERVAL, DEFAULT_SICC_SCAN_INTERVAL
+                    ),
+                ): _scan_interval_selector(),
+                vol.Required(
+                    CONF_LOAD_RUNTIME_SCAN_INTERVAL,
+                    default=options.get(
+                        CONF_LOAD_RUNTIME_SCAN_INTERVAL,
+                        DEFAULT_LOAD_RUNTIME_SCAN_INTERVAL,
                     ),
                 ): _scan_interval_selector(),
             }

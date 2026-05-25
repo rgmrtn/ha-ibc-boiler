@@ -18,6 +18,9 @@ from .const import (
     OR_INFO,
     OR_LIFETIME,
     OR_LIVE,
+    OR_LOAD_CONFIG,
+    OR_LOAD_ENUM,
+    OR_LOAD_RUNTIME,
     OR_NETWORK,
     OR_SICC,
 )
@@ -158,6 +161,18 @@ class IBCApiClient:
     async def async_get_sicc(self) -> dict[str, Any]:
         """SIP/FCP flame-detection diagnostics (SIP_FlameCurrent, FCP_Power, ...)."""
         return await self.async_query(OR_SICC)
+
+    async def async_get_load_enum(self) -> dict[str, Any]:
+        """or=13 — per-load type/emitter enumeration (which loads are enabled)."""
+        return await self.async_query(OR_LOAD_ENUM)
+
+    async def async_get_load_config(self, load_no: int) -> dict[str, Any]:
+        """or=16 GET — per-load configuration. Reads use `object_index`."""
+        return await self.async_query(OR_LOAD_CONFIG, object_index=load_no)
+
+    async def async_get_load_runtime(self, load_no: int) -> dict[str, Any]:
+        """or=32 — per-zone runtime. The CGI selects the load via `load_no`."""
+        return await self.async_query(OR_LOAD_RUNTIME, load_no=load_no)
 
     async def async_test_connection(self) -> dict[str, Any]:
         """Used by the config flow to confirm the host is a V-10 boiler.

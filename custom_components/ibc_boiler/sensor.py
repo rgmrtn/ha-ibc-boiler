@@ -1,10 +1,11 @@
 """Sensor platform for IBC V-10-platform boilers.
 
 Sensors are described declaratively (`IBCSensorEntityDescription`) and each
-description names the endpoint coordinator it reads from. v0.4 wires
-descriptions to four endpoints: live (or=19), lifetime (or=6), sicc (or=44),
-and error log (or=7) — the last one only feeds the dedicated `last_error`
-sensor.
+description names the endpoint coordinator it reads from. v0.5 extends
+v0.4's per-endpoint model with per-load child devices: the boiler-device
+sensors keep reading from the shared coordinators (live/lifetime/sicc/error_log),
+and additional per-load sensors read from the multi-load `load_runtime`
+coordinator + the static or=6/or=16 payloads stashed on runtime_data.
 """
 
 from __future__ import annotations
@@ -28,31 +29,33 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import (
-    CONNECTION_NETWORK_MAC,
-    DeviceInfo,
-    format_mac,
-)
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    CONF_HOST,
-    DEFAULT_MODEL,
-    DOMAIN,
     ENDPOINT_ERROR_LOG,
     ENDPOINT_LIFETIME,
     ENDPOINT_LIVE,
+    ENDPOINT_LOAD_RUNTIME,
     ENDPOINT_SICC,
-    MANUFACTURER,
+    LOAD_TYPE_NAMES,
+    LoadType,
     NOT_CONNECTED_SENTINEL,
+    SUPPORTED_LOAD_CONFIG_TYPES,
 )
 from .coordinator import (
     IBCConfigEntry,
     IBCEndpointCoordinator,
     IBCErrorLogCoordinator,
-    IBCRuntimeData,
+    IBCLoadRuntimeCoordinator,
+)
+from .devices import (
+    boiler_device_info,
+    boiler_unique_id,
+    load_device_info,
+    load_entity_unique_id,
 )
 
 
@@ -117,12 +120,12 @@ def _flame_current(value: Any) -> float | None:
     return round(f / 249, 2)
 
 
-def _online_state(value: Any) -> str | None:
-    """SIP_Online → "online" / "offline" text (bool-shaped int)."""
+def _load_type_text(value: Any) -> str | None:
+    """or=32 `Type` integer → friendly load-type name for the per-load sensor."""
     i = _as_int(value)
     if i is None:
         return None
-    return "online" if i else "offline"
+    return LOAD_TYPE_NAMES.get(i, f"Type {i}")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -353,6 +356,7 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
         value_fn=lambda d: _as_int(d.get("LogEntries")),
     ),
     # ----- Flame / SICC (or=44) ---------------------------------------------
+    # sicc_online moved to binary_sensor in v0.5 — see binary_sensor.py.
     IBCSensorEntityDescription(
         key="flame_current",
         translation_key="flame_current",
@@ -373,44 +377,168 @@ SENSOR_DESCRIPTIONS: tuple[IBCSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: _as_float(d.get("FCP_Power")),
     ),
-    IBCSensorEntityDescription(
-        key="sicc_online",
-        translation_key="sicc_online",
-        endpoint=ENDPOINT_SICC,
+)
+
+
+# ---------------------------------------------------------------------------
+# Per-load sensor descriptions
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class IBCLoadSensorDescription(SensorEntityDescription):
+    """Per-load sensor description.
+
+    `source` selects the data feed:
+      - "runtime" → reads `coordinator.data[load_no]` from the
+        IBCLoadRuntimeCoordinator (or=32). Updates every tick.
+      - "lifetime_load_x_on_time" → reads `LoadXOnTime` from the lifetime
+        coordinator (or=6). Updates on the lifetime cadence.
+      - "config" → static, reads `runtime.load_configs[load_no]` (or=16,
+        fetched once at setup).
+    """
+
+    source: str
+    value_fn: Callable[[dict[str, Any]], StateType]
+
+
+LOAD_RUNTIME_DESCRIPTIONS: tuple[IBCLoadSensorDescription, ...] = (
+    IBCLoadSensorDescription(
+        key="load_supply_temp",
+        translation_key="load_supply_temp",
+        source="runtime",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        value_fn=lambda d: _temp(d.get("SupplyT")),
+    ),
+    IBCLoadSensorDescription(
+        key="load_return_temp",
+        translation_key="load_return_temp",
+        source="runtime",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        value_fn=lambda d: _temp(d.get("ReturnT")),
+    ),
+    IBCLoadSensorDescription(
+        key="load_heat_output",
+        translation_key="load_heat_output",
+        source="runtime",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="MBH",
+        value_fn=lambda d: _as_float(d.get("HeatOut")),
+    ),
+    IBCLoadSensorDescription(
+        key="load_cycles",
+        translation_key="load_cycles",
+        source="runtime",
+        state_class=SensorStateClass.TOTAL_INCREASING,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda d: _online_state(d.get("SIP_Online")),
+        value_fn=lambda d: _as_int(d.get("Cycles")),
+    ),
+    IBCLoadSensorDescription(
+        key="load_priority",
+        translation_key="load_priority",
+        source="runtime",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _as_int(d.get("Priority")),
+    ),
+    IBCLoadSensorDescription(
+        key="load_type",
+        translation_key="load_type",
+        source="runtime",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: _load_type_text(d.get("Type")),
     ),
 )
 
 
-def _build_device_info(entry: IBCConfigEntry, runtime: IBCRuntimeData) -> DeviceInfo:
-    info = runtime.info or {}
-    network = runtime.network or {}
+def _load_on_time_value_fn(load_no: int) -> Callable[[dict[str, Any]], StateType]:
+    field = f"Load{load_no}OnTime"
+    return lambda d: _as_int(d.get(field))
 
-    model = _str_or_none(info.get("model")) or DEFAULT_MODEL
-    sw_version_parts = [
-        _str_or_none(info.get("fwversion")),
-        _str_or_none(info.get("fwdate")),
-    ]
-    sw_version = " ".join(p for p in sw_version_parts if p) or None
-    mac_raw = _str_or_none(network.get("mac"))
-    mac = format_mac(mac_raw) if mac_raw else None
-    site_name = _str_or_none(network.get("site_name"))
 
-    name = site_name or entry.title
-
-    device = DeviceInfo(
-        identifiers={(DOMAIN, entry.unique_id or entry.entry_id)},
-        name=name,
-        manufacturer=MANUFACTURER,
-        model=model,
-        configuration_url=f"http://{entry.data[CONF_HOST]}/",
+def _load_on_time_description(load_no: int) -> IBCLoadSensorDescription:
+    return IBCLoadSensorDescription(
+        key="load_on_time",
+        translation_key="load_on_time",
+        source="lifetime_load_on_time",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_load_on_time_value_fn(load_no),
     )
-    if sw_version:
-        device["sw_version"] = sw_version
-    if mac:
-        device["connections"] = {(CONNECTION_NETWORK_MAC, mac)}
-    return device
+
+
+# or=16 per-LoadType config sensor descriptions. Only LoadTypes with a
+# confirmed schema are listed; other types skip or=16 entirely.
+LOAD_CONFIG_DESCRIPTIONS_BY_TYPE: dict[int, tuple[IBCLoadSensorDescription, ...]] = {
+    LoadType.SET_POINT: (
+        IBCLoadSensorDescription(
+            key="load_supply_setpoint",
+            translation_key="load_supply_setpoint",
+            source="config",
+            device_class=SensorDeviceClass.TEMPERATURE,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda d: _temp(d.get("SupplySetPoint")),
+        ),
+        IBCLoadSensorDescription(
+            key="load_max_supply",
+            translation_key="load_max_supply",
+            source="config",
+            device_class=SensorDeviceClass.TEMPERATURE,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda d: _temp(d.get("MaxSupplyT")),
+        ),
+        IBCLoadSensorDescription(
+            key="load_tank_target",
+            translation_key="load_tank_target",
+            source="config",
+            device_class=SensorDeviceClass.TEMPERATURE,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda d: _temp(d.get("TankT")),
+        ),
+    ),
+    LoadType.ON_DEMAND_DHW: (
+        IBCLoadSensorDescription(
+            key="load_output_target",
+            translation_key="load_output_target",
+            source="config",
+            device_class=SensorDeviceClass.TEMPERATURE,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda d: _temp(d.get("OutputTarget")),
+        ),
+        IBCLoadSensorDescription(
+            key="load_max_supply",
+            translation_key="load_max_supply",
+            source="config",
+            device_class=SensorDeviceClass.TEMPERATURE,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda d: _temp(d.get("MaxSupplyT")),
+        ),
+        IBCLoadSensorDescription(
+            key="load_min_supply",
+            translation_key="load_min_supply",
+            source="config",
+            device_class=SensorDeviceClass.TEMPERATURE,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda d: _temp(d.get("MinSupplyT")),
+        ),
+    ),
+}
 
 
 async def async_setup_entry(
@@ -419,24 +547,60 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     runtime = entry.runtime_data
-    device_info = _build_device_info(entry, runtime)
+    boiler_device = boiler_device_info(entry, runtime)
 
     entities: list[SensorEntity] = [
         IBCSensor(
             runtime.coordinators[description.endpoint],
             entry,
             description,
-            device_info,
+            boiler_device,
         )
         for description in SENSOR_DESCRIPTIONS
     ]
     entities.append(
         IBCLastErrorSensor(
-            runtime.coordinators[ENDPOINT_ERROR_LOG],  # type: ignore[arg-type]
+            runtime.coordinators[ENDPOINT_ERROR_LOG],
             entry,
-            device_info,
+            boiler_device,
         )
     )
+
+    load_runtime_coord: IBCLoadRuntimeCoordinator = runtime.coordinators[
+        ENDPOINT_LOAD_RUNTIME
+    ]
+    lifetime_coord = runtime.coordinators[ENDPOINT_LIFETIME]
+
+    for load_no, load_type in runtime.enabled_loads:
+        load_device = load_device_info(entry, runtime, load_no, load_type)
+
+        for desc in LOAD_RUNTIME_DESCRIPTIONS:
+            entities.append(
+                IBCLoadRuntimeSensor(
+                    load_runtime_coord, entry, desc, load_device, load_no
+                )
+            )
+
+        entities.append(
+            IBCLoadLifetimeSensor(
+                lifetime_coord,
+                entry,
+                _load_on_time_description(load_no),
+                load_device,
+                load_no,
+            )
+        )
+
+        if load_type in SUPPORTED_LOAD_CONFIG_TYPES:
+            config = runtime.load_configs.get(load_no)
+            if config is not None:
+                for desc in LOAD_CONFIG_DESCRIPTIONS_BY_TYPE.get(load_type, ()):
+                    entities.append(
+                        IBCLoadConfigSensor(
+                            entry, desc, load_device, load_no, config
+                        )
+                    )
+
     async_add_entities(entities)
 
 
@@ -455,7 +619,7 @@ class IBCSensor(CoordinatorEntity[IBCEndpointCoordinator], SensorEntity):
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_{description.key}"
+        self._attr_unique_id = f"{boiler_unique_id(entry)}_{description.key}"
         self._attr_device_info = device_info
 
     @property
@@ -474,6 +638,99 @@ class IBCSensor(CoordinatorEntity[IBCEndpointCoordinator], SensorEntity):
         if not isinstance(data, dict):
             return None
         return attrs_fn(data)
+
+
+class IBCLoadRuntimeSensor(
+    CoordinatorEntity[IBCLoadRuntimeCoordinator], SensorEntity
+):
+    """Per-load sensor backed by or=32 (one entry per load in coordinator.data)."""
+
+    _attr_has_entity_name = True
+    entity_description: IBCLoadSensorDescription
+
+    def __init__(
+        self,
+        coordinator: IBCLoadRuntimeCoordinator,
+        entry: IBCConfigEntry,
+        description: IBCLoadSensorDescription,
+        device_info: DeviceInfo,
+        load_no: int,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._load_no = load_no
+        self._attr_unique_id = load_entity_unique_id(entry, load_no, description.key)
+        self._attr_device_info = device_info
+
+    @property
+    def native_value(self) -> StateType:
+        data = self.coordinator.data
+        if not isinstance(data, dict):
+            return None
+        load_data = data.get(self._load_no)
+        if not isinstance(load_data, dict):
+            return None
+        return self.entity_description.value_fn(load_data)
+
+
+class IBCLoadLifetimeSensor(CoordinatorEntity[IBCEndpointCoordinator], SensorEntity):
+    """Per-load on-time sensor backed by the boiler-level or=6 lifetime payload."""
+
+    _attr_has_entity_name = True
+    entity_description: IBCLoadSensorDescription
+
+    def __init__(
+        self,
+        coordinator: IBCEndpointCoordinator,
+        entry: IBCConfigEntry,
+        description: IBCLoadSensorDescription,
+        device_info: DeviceInfo,
+        load_no: int,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._load_no = load_no
+        self._attr_unique_id = load_entity_unique_id(entry, load_no, description.key)
+        self._attr_device_info = device_info
+
+    @property
+    def native_value(self) -> StateType:
+        data = self.coordinator.data
+        if not isinstance(data, dict):
+            return None
+        return self.entity_description.value_fn(data)
+
+
+class IBCLoadConfigSensor(SensorEntity):
+    """Static per-load config sensor backed by or=16, captured once at setup.
+
+    or=16 is fetched at setup (and on integration reload); it is not part of
+    a coordinator, so the entity is not a CoordinatorEntity. The value is
+    read each time HA polls — which simply re-applies value_fn to the same
+    captured payload.
+    """
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    entity_description: IBCLoadSensorDescription
+
+    def __init__(
+        self,
+        entry: IBCConfigEntry,
+        description: IBCLoadSensorDescription,
+        device_info: DeviceInfo,
+        load_no: int,
+        config: dict[str, Any],
+    ) -> None:
+        self.entity_description = description
+        self._load_no = load_no
+        self._config = config
+        self._attr_unique_id = load_entity_unique_id(entry, load_no, description.key)
+        self._attr_device_info = device_info
+
+    @property
+    def native_value(self) -> StateType:
+        return self.entity_description.value_fn(self._config)
 
 
 class IBCLastErrorSensor(CoordinatorEntity[IBCErrorLogCoordinator], SensorEntity):
@@ -500,7 +757,7 @@ class IBCLastErrorSensor(CoordinatorEntity[IBCErrorLogCoordinator], SensorEntity
         device_info: DeviceInfo,
     ) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_last_error"
+        self._attr_unique_id = f"{boiler_unique_id(entry)}_last_error"
         self._attr_device_info = device_info
 
     @property

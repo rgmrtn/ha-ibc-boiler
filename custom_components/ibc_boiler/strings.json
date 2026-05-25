@@ -28,7 +28,8 @@
           "live_scan_interval": "Live data (s) — temperatures, pressures, status (or=19)",
           "error_log_scan_interval": "Error log (s) — most recent log entry, event notifications (or=7)",
           "lifetime_scan_interval": "Lifetime counters (s) — power-on hours, burner starts (or=6)",
-          "sicc_scan_interval": "Flame / SICC module (s) — flame current, SICC voltages (or=44)"
+          "sicc_scan_interval": "Flame / SICC module (s) — flame current, SICC voltages (or=44)",
+          "load_runtime_scan_interval": "Per-load runtime (s) — supply/return, heat output per enabled load (or=32)"
         }
       }
     }
@@ -61,8 +62,27 @@
       "log_entries": { "name": "Log Entries" },
       "flame_current": { "name": "Flame Current" },
       "sicc_power": { "name": "SICC Power" },
+      "last_error": { "name": "Last Logged Error" },
+      "load_supply_temp": { "name": "Supply Temperature" },
+      "load_return_temp": { "name": "Return Temperature" },
+      "load_heat_output": { "name": "Heat Output" },
+      "load_cycles": { "name": "Cycles" },
+      "load_priority": { "name": "Priority" },
+      "load_type": { "name": "Load Type" },
+      "load_on_time": { "name": "On-Time" },
+      "load_supply_setpoint": { "name": "Supply Setpoint" },
+      "load_max_supply": { "name": "Max Supply Temperature" },
+      "load_min_supply": { "name": "Min Supply Temperature" },
+      "load_tank_target": { "name": "Tank Target" },
+      "load_output_target": { "name": "Output Target" }
+    },
+    "binary_sensor": {
       "sicc_online": { "name": "SICC Online" },
-      "last_error": { "name": "Last Logged Error" }
+      "summer_off": { "name": "Summer Off" },
+      "remote_mode": { "name": "Remote Mode" },
+      "load_pump": { "name": "Pump" },
+      "load_calling": { "name": "Calling for Heat" },
+      "load_servicing": { "name": "Servicing" }
     }
   }
 }

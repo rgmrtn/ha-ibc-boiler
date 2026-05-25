@@ -1,0 +1,21 @@
+{
+  "rbid": 0,
+  "dump": 13,
+  "object_no": 13,
+  "Load1Type": 3,
+  "Load2Type": 0,
+  "Load3Type": 0,
+  "Load4Type": 0,
+  "Load5Type": 7,
+  "Load1Emitter": 0,
+  "Load2Emitter": 0,
+  "Load3Emitter": 0,
+  "Load4Emitter": 0,
+  "Load5Emitter": 0,
+  "SB1Enable": false,
+  "SB2Enable": false,
+  "SB3Enable": false,
+  "SB4Enable": false,
+  "Occupied": 1,
+  "Imperial": 31
+}

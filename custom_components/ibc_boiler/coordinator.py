@@ -26,15 +26,18 @@ from .const import (
     CONF_ERROR_LOG_SCAN_INTERVAL,
     CONF_LIFETIME_SCAN_INTERVAL,
     CONF_LIVE_SCAN_INTERVAL,
+    CONF_LOAD_RUNTIME_SCAN_INTERVAL,
     CONF_SICC_SCAN_INTERVAL,
     DEFAULT_ERROR_LOG_SCAN_INTERVAL,
     DEFAULT_LIFETIME_SCAN_INTERVAL,
     DEFAULT_LIVE_SCAN_INTERVAL,
+    DEFAULT_LOAD_RUNTIME_SCAN_INTERVAL,
     DEFAULT_SICC_SCAN_INTERVAL,
     DOMAIN,
     ENDPOINT_ERROR_LOG,
     ENDPOINT_LIFETIME,
     ENDPOINT_LIVE,
+    ENDPOINT_LOAD_RUNTIME,
     ENDPOINT_SICC,
     EVENT_ERROR_LOGGED,
     NOT_CONNECTED_SENTINEL,
@@ -311,14 +314,71 @@ class IBCErrorLogCoordinator(IBCEndpointCoordinator):
         self.hass.bus.async_fire(EVENT_ERROR_LOGGED, payload)
 
 
+class IBCLoadRuntimeCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]]):
+    """or=32 per-load runtime — fetches every enabled load on each tick.
+
+    One coordinator, one tick, multiple HTTP requests (one per enabled load).
+    A failure on one load is logged at debug and the previous payload for
+    that load is kept, so a flaky single load doesn't blank the others.
+    A complete tick failure (every load fails) follows the same fail-quiet
+    policy as the lifetime/sicc coordinators.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: IBCApiClient,
+        enabled_loads: list[tuple[int, int]],
+    ) -> None:
+        scan_interval = int(
+            entry.options.get(
+                CONF_LOAD_RUNTIME_SCAN_INTERVAL,
+                DEFAULT_LOAD_RUNTIME_SCAN_INTERVAL,
+            )
+        )
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN} {client.host} {ENDPOINT_LOAD_RUNTIME}",
+            update_interval=timedelta(seconds=scan_interval),
+        )
+        self._client = client
+        # List of (load_no, load_type) — load_type from or=13 LoadXType.
+        self._enabled_loads = list(enabled_loads)
+        self.endpoint_id = ENDPOINT_LOAD_RUNTIME
+
+    @property
+    def enabled_loads(self) -> list[tuple[int, int]]:
+        return list(self._enabled_loads)
+
+    async def _async_update_data(self) -> dict[int, dict[str, Any]]:
+        previous = self.data or {}
+        result: dict[int, dict[str, Any]] = {}
+        for load_no, _load_type in self._enabled_loads:
+            try:
+                result[load_no] = await self._client.async_get_load_runtime(load_no)
+            except (IBCConnectionError, IBCResponseError) as err:
+                _LOGGER.debug(
+                    "or=32 load %d fetch failed: %s — keeping last payload",
+                    load_no,
+                    err,
+                )
+                if load_no in previous:
+                    result[load_no] = previous[load_no]
+        return result
+
+
 @dataclass
 class IBCRuntimeData:
     """All per-entry state, attached to ConfigEntry.runtime_data."""
 
     client: IBCApiClient
-    coordinators: dict[str, IBCEndpointCoordinator]
+    coordinators: dict[str, Any]
     info: dict[str, Any]
     network: dict[str, Any]
+    enabled_loads: list[tuple[int, int]]
+    load_configs: dict[int, dict[str, Any]]
 
     @property
     def live(self) -> IBCLiveCoordinator:
@@ -327,6 +387,10 @@ class IBCRuntimeData:
     @property
     def error_log(self) -> IBCErrorLogCoordinator:
         return self.coordinators[ENDPOINT_ERROR_LOG]  # type: ignore[return-value]
+
+    @property
+    def load_runtime(self) -> IBCLoadRuntimeCoordinator:
+        return self.coordinators[ENDPOINT_LOAD_RUNTIME]  # type: ignore[return-value]
 
 
 IBCConfigEntry: TypeAlias = ConfigEntry[IBCRuntimeData]

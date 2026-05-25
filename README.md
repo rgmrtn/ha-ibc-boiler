@@ -35,16 +35,30 @@ Plain HTTP on the LAN, no auth on the CGI itself. The integration is `local_poll
 
 ## Configuration
 
-The **Add Integration** flow only asks for the boiler's host. After the device is set up, four independent scan intervals are editable from **Settings → Devices & Services → IBC Boiler → Configure**:
+The **Add Integration** flow only asks for the boiler's host. After the device is set up, five independent scan intervals are editable from **Settings → Devices & Services → IBC Boiler → Configure**:
 
 | Endpoint | Default | What it polls |
 |---|---|---|
-| Live data (`live_scan_interval`) | 30 s | Temperatures, pressures, current status, active faults/warnings (or=19). |
+| Live data (`live_scan_interval`) | 30 s | Temperatures, pressures, current status, active faults/warnings, per-load pump/calling/servicing bits (or=19). |
 | Error log (`error_log_scan_interval`) | 60 s | Most-recent boiler log entry; the `ibc_boiler_error_logged` event fires when a new entry shows up (or=7). |
-| Lifetime counters (`lifetime_scan_interval`) | 300 s | Power-on hours, burner hours/starts/trials, lifetime error/warning totals (or=6). These only tick at hour boundaries, so polling faster is wasteful. |
-| Flame / SICC module (`sicc_scan_interval`) | 30 s | Flame current and SICC diagnostics (or=44). |
+| Lifetime counters (`lifetime_scan_interval`) | 300 s | Power-on hours, burner hours/starts/trials, per-load on-time, lifetime error/warning totals (or=6). These only tick at hour boundaries, so polling faster is wasteful. |
+| Flame / SICC module (`sicc_scan_interval`) | 30 s | Flame current and SICC diagnostics + SICC-online status (or=44). |
+| Per-load runtime (`load_runtime_scan_interval`) | 30 s | Supply/return temperatures, heat output, cycles, priority per enabled load (or=32). One HTTP request per enabled load per tick. |
 
 All intervals are bounded `[10, 3600]` seconds. Each endpoint runs on its own coordinator, so a transient failure on one (say, or=44) won't blank entities backed by another.
+
+### Per-load devices
+
+Every load the boiler reports as enabled in or=13 (`LoadXType ≠ 0`) shows up as its own Home Assistant device, nested under the boiler device via HA's `via_device` link. The set of loads is discovered once at setup — if you reconfigure loads on the boiler (enable a new zone, switch a load from heating to DHW), reload the integration from **Settings → Devices & Services → IBC Boiler → ⋮ → Reload** to pick up the change.
+
+Each load device carries:
+
+- Supply/Return Temperature, Heat Output (MBH), Cycles, Priority, Load Type — from or=32, refreshed every `load_runtime_scan_interval`.
+- On-Time (hours) — from or=6's `LoadXOnTime`.
+- Pump (binary_sensor, RUNNING) — from the `Servicing` bitfield bit 8+(load-1), the same bit the boiler's own UI reads.
+- Calling for Heat (binary_sensor, HEAT) — `Servicing` bit 16+(load-1).
+- Servicing (binary_sensor, diagnostic) — `Servicing` bit 0+(load-1).
+- For LoadType 3 (Set Point) and 7 (On-Demand DHW) only, per-type config sensors read from or=16: supply setpoint, max/min supply, tank/output target. Other LoadTypes get the runtime + binary sensors but skip the or=16 fetch until a sample of that LoadType's config is contributed (see `docs/protocol.md`).
 
 ## Entities created
 
@@ -84,13 +98,19 @@ One device per boiler. The boiler's `model` and firmware version are read from t
 
 - Flame Current (diagnostic, µA) - SIP_FlameCurrent / 249, matching the divisor used by the boiler's own JS to render flame current.
 - SICC Power (diagnostic, W) - FCP_Power.
-- SICC Online (diagnostic, text: `online` / `offline`) - SIP_Online flag.
+- SICC Online (binary_sensor, connectivity) - SIP_Online flag. **In v0.5 this moved from a text sensor to a connectivity binary_sensor — see "Upgrading from v0.4" below.**
 
 ### Error log (or=7)
 
 - Last Logged Error (diagnostic, text) - decoded text of the most recent entry in the boiler's error log, matching what the boiler's own web UI shows. Raw bits (`major_err`, `minor_err`, `system_err`, `combi_err`, `sim_status`) plus timestamp and the conditions at the time of the fault (fan RPM, inlet/outlet/board temp, inlet pressure) are exposed as entity attributes.
 
 Temperatures are reported in °C (the V-10's native unit — see `docs/protocol.md`). Home Assistant converts to °F automatically if your profile is set to imperial. Temperatures from sensors that aren't wired up read as `unknown` rather than the V-10's `-32766` sentinel value.
+
+### Upgrading from v0.4
+
+- The new **per-load devices** appear automatically on first start of v0.5 if the boiler reports any enabled loads in or=13. A new options field `load_runtime_scan_interval` (default 30 s) is added; existing scan intervals are preserved.
+- **Breaking — `sicc_online` moved from `sensor.` to `binary_sensor.`.** The translation key is unchanged, but the entity ID's domain prefix changes. The old text sensor would have read `online` / `offline`; the new binary_sensor has `BinarySensorDeviceClass.CONNECTIVITY` (state: `on` / `off`). Update any automations that referenced `sensor.<boiler>_sicc_online` to `binary_sensor.<boiler>_sicc_online` and adjust the comparison accordingly.
+- **Load configuration changes on the boiler require a reload.** If you enable, disable, or change the type of a load on the boiler, reload the integration entry (Settings → Devices & Services → IBC Boiler → ⋮ → Reload) so it re-reads or=13 + or=16.
 
 ### Upgrading from v0.3
 
